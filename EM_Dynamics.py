@@ -1,15 +1,23 @@
 # EM dynamics
 # Script to generate and solve the equations of motion for two EM-driven EM satellites
+# For help see PyDy Tutorials: https://github.com/pydy/pydy-tutorial-human-standing http://www.pydy.org/examples/double_pendulum.html
+
+
 from sympy import *
 from sympy.physics.mechanics import *
+from numpy import deg2rad, rad2deg, array, zeros, linspace
+from scipy.integrate import odeint
+from pydy.codegen.ode_function_generators import generate_ode_function
+from matplotlib.pyplot import plot, legend, xlabel, ylabel, rcParams
+rcParams['figure.figsize'] = (14.0, 6.0)
 
 ## Generalized co-ordinates x, y, theta1/I, theta2/J
 # q3, q4 are counter clockwise (right hand rule), x omponents giving the angles of Cube CoMs
 q1, q2, q3, q4 = dynamicsymbols('q1 q2 q3 q4')
-q1d, q2d, q3d, q4d = dynamicsymbols('q1 q2 q3 q4', 1)
+q1d, q2d, q3d, q4d = dynamicsymbols('q1 q2 q3 q4', 1) # skipped in human tut.
 # Derivatives of Generalized Co-ordinates
 u1, u2, u3, u4 = dynamicsymbols('u1 u2 u3 u4')
-u1d, u2d, u3d, u4d = dynamicsymbols('u1 u2 u3 u4', 1)
+u1d, u2d, u3d, u4d = dynamicsymbols('u1 u2 u3 u4', 1) # skipped in human tut.
 # Parameters to set
 r, R, phi1, phi2 = symbols('r, R, phi1, phi2')
 
@@ -58,39 +66,126 @@ inertia_center_j = (inertia_dyadic_j , p_j)
 body_i = RigidBody('body i', p_i, I, mass_i, inertia_center_i)
 body_j = RigidBody('body j', p_j, J, mass_j, inertia_center_j)
 
+
 ### Forces
 
 ## Create vector direction through which forces (both F12 and F21) act.
-# TODO vectors should be changed to act at the EM coils, not mass CoMs. Will probably need to make extra points for this.
-
-vec_ij = p_j.pos_from(p_i)
+# TODO vectors should be changed to act at the EM coils, not mass CoMs. The way to do this seems to be to extra points that arefixed in each body frame.
+# TODO These should be explicitly expressed in inertial frame right? Tutorial expresses Gravity in inertial frame. Confirm this is having desired result.
+vec_ij = p_j.pos_from(p_i).express(N)
 vec_ij_norm = vec_ij.normalize()
 
-vec_ji = p_i.pos_from(p_j)
+vec_ji = p_i.pos_from(p_j).express(N)
 vec_ji_norm = vec_ji.normalize()
 
-## Compute the magnitude of the force vector using EM equation
 
+## Compute the magnitude of the force vector using EM equation
 def compute_EM_Force(dist):
     #####
-    # TODO implement correct model
+    # TODO Augment with control of polarization, and perhaps improve the distance-to-force model.
     #####
-    return 1/dist**2
-
-vec_ij_mag = compute_EM_Force(vec_ij.magnitude())
-vec_ji_mag = compute_EM_Force(vec_ji.magnitude())
-
-## TODO set vector using magnitude and direction
-
-# TODO Create tuple holding the vector, and the point upon which it acts
-
-## TODO Will at some point have to make points/forces on catching side. 
-
-# TODO also try to plot these things early on, to debug e.g. correct direction of angles and transformation matrices (it seems positive angles are CCW, so see e.g. red notes in notebook about swapping angles in your derivation)
+    return 0.0003*dist**(-0.944)
+Force_vec_ij_mag = compute_EM_Force(vec_ij.magnitude())
+Force_vec_ji_mag = compute_EM_Force(vec_ji.magnitude())
 
 
+## Set vector using Force magnitude and vector direction
+Force_vec_ij = Force_vec_ij_mag * vec_ij_norm
+Force_vec_ji = Force_vec_ji_mag * vec_ji_norm
 
 
-## Other Usefuls to know about
-# print(m_i.pos_from(m_j)) # position of m_i from m_j
+## Create tuple holding the vector, and the point upon which it acts
+# TODO update with correct EM point, not CoM point
+# NOTE reversal of indices here: Force_ji is consistent with F21 from EM.py
+# Force_vec_ij acts on p_j to give Force_ji.  Make sure to put in correct order when Forces are put into matrices and solved row by row in ODE integrator
+Force_ji = (p_j , Force_vec_ij)
+Force_ij = (p_i , Force_vec_ji)
+
+
+## Exogeneous Inputs (forces and torques)- will be set to 0 later.
+x_F, y_F, i_T, j_T = dynamicsymbols('x_F, y_F, i_T, j_T')
+# As done with F_ij and F_ji above, need to multiply magntidue by directions.
+Ex_F_vector = x_F * N.x + y_F * N.y
+# NOTE Not sure about Ex_T eqs, but will be setting mag to 0 anyway
+Ex_T_vector_theta_i = i_T * N.z - j_T * N.z
+Ex_T_vector_theta_j = j_T * N.z - i_T * N.z
+# And create tuple of point, force or frame, torque
+Ex_Force = (O, Ex_F_vector)
+Ex_Torque_i = (I, Ex_T_vector_theta_i)
+Ex_Torque_j = (J, Ex_T_vector_theta_j)
+
+
+
+## Use Kane's Method to generate Equations of Motion
+# Put Generalized coordinates in vector
+coordinates = [q1, q2, q3, q4]
+# Put Generalized speeds in vector
+speeds = [u1, u2, u3, u4]
+# Create KanesMethod object, and vectors holding forces and rigid bodies
+kane = KanesMethod(N, coordinates, speeds, kde)
+loads = [Force_ij, Force_ji, Ex_Force, Ex_Torque_i, Ex_Torque_j]
+bodies = [body_i, body_j]
+# Generate Fr and Fr_star that are used by Kane
+fr, frstar = kane.kanes_equations(loads, bodies)
+# Reduce expression by using known trig identities
+trigsimp(fr + frstar)
+# Simplify the Mass matrix and Force vector
+mass_matrix = trigsimp(kane.mass_matrix_full)
+forcing_vector = trigsimp(kane.forcing_full)
+
+
+### Transform symbolic equations of motion to Python functions and evaluate using numerical integration to solve the ordinary differential initial value problem
+
+# List all constants used by the EoM: lengths, angles, masses, inertias (i.e. anything defined as "symbols"). Order doesn't matter.
+constants = [r, mass_i, mass_j, inertia_i, inertia_j] # NOTE add in R, phi1, phi2 when make extra points.
+
+# A list called "specified" holds Exogenous inputs, i.e. inputs that don't rely on information of system (i.e. externally applied forces or torques). The Tutorial includes them, and defined them after Forces, including them in "loads" list above. I tried to neglect these and change remaining code accordingly, but without success. Instead we just create external loads as done in tutorial and set them to 0 for all time.
+
+specified = [x_F, y_F, i_T, j_T]
+
+# create the function
+right_hand_side = generate_ode_function(forcing_vector, coordinates, speeds, constants, mass_matrix = mass_matrix, specifieds=specified)
+
+## Set initial conditions, parameter values and time array
+
+# Initialize q and u
+# righthandside function creates state vector x holding q and u
+x0 = zeros(8)
+x0[2] = deg2rad(315.0) # i.e. -pi/4 , assuming CCW+, so will be right cube.
+x0[3] = deg2rad(45.0)  # i.e. +pi/4 , assuming CCW+, so will be left cube.
+
+# Assign numerical values to all constants (and any exogenous inputs)
+numerical_constants = array([(2*0.025**2)**0.5, # Hypot. of side 25mm
+                            0.25, # 250g
+                            0.25, # 250g
+                            (0.25*0.05**2)/6, # I of CoM of cube= (ms^2)/6
+                            (0.25*0.05**2)/6 # I of CoM of cube= (ms^2)/6
+                            ])
+
+# numerical_specified created here and set to 0
+numerical_specified = zeros(4)
+
+# create time vector
+t = linspace(0,10,601) # 60 Hz
+
+# Evaluate right_hand_side numerically
+# This seems to basically intitialize the equation: The 0.0 here is the current time, and x) initilaizes the states. Seems to require numerical_specified as an argument before numerical_constants.
+right_hand_side(x0, 0.0, numerical_specified, numerical_constants)
+
+# integration step
+y = odeint(right_hand_side, x0, t, args=(numerical_specified, numerical_constants))
+print(y.shape)
+
+### Plotting
+plot(t, rad2deg(y[:, 2:4]))
+xlabel('Time [s]')
+ylabel('Angle [deg]')
+#legend()
+
+
+
+# TODO Create points and forces on catching side.
+# TODO Control theory - NOTE the same Human Tutorial includes a Control part
+# TODO In plots, check in particular to ensure correct direction of angles and transformation matrices (it seems positive angles are CCW, so see e.g. red notes in notebook about swapping angles in your derivation)
+
 # print(N.dcm(I)) #DCM: format is N.xyz = N.dcm(I) * I.xyz
