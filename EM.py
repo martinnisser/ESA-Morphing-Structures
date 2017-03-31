@@ -1,3 +1,7 @@
+# EM
+# Created by Martin Nisser, 16th January 2017
+# Script to calculate EM forces and torques between 2 arbitrarily oriented coils, or two parallel wires
+
 # %matplotlib inline
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,7 +19,7 @@ t0 = time.clock()
 ChooseCoils = True
 ChooseParallelLines = not ChooseCoils
 # Discretization (N)
-Ni = 3000
+Ni = 300#! 3000
 Nj = Ni
 # Currents (I)
 Ii = 1
@@ -24,9 +28,9 @@ Ij = Ii
 X_length = 200
 ## Coils Geometry
 # Coil i
-turns_i = 200
+turns_i = 10#! 200
 radius_i = 4 / 1000 # enter radius in mm to left of "/"
-h_i = 0.2 / (2*pi*1000) # enter height of one turn of coil in mm to the left of "/"
+h_i = 0.1 / (2*pi*1000)#! 0.2 / (2*pi*1000) # enter height of one turn of coil in mm to the left of "/"
 # Coil j
 turns_j = turns_i
 radius_j = radius_i
@@ -36,23 +40,24 @@ if (radius_i/(h_i*(2*pi)) < 10) or (radius_j/(h_j*(2*pi)) < 10) :
     print('\n\nWarning, coil pitch is steep: r/h < 10. ri/hi=',radius_i/(h_i*(2*pi)))
 
 def main():
-    d = np.array([0,8.1,0]) / 1000 # separation along axis between coils in mm
-    iterateCoils(d)
-    #oneCoilOrLines(d)
+    d = np.array([0,0,100]) / 1000  #! d = np.array([0,0,40.2]) / 1000 # separation along axis between coils in mm
+    #iterateCoils(d)
+    oneCoilOrLines(d)
 
 def iterateCoils(distance):
 
     d=distance
-    N_iter = 1
+    N_iter = 40 #! 80
     F12_results = np.zeros((N_iter,3))
     F21_results = np.zeros((N_iter,3))
     T12_results = np.zeros((N_iter,3))
     T21_results = np.zeros((N_iter,3))
     time_comp_results = np.zeros(N_iter)
     y_sep_results = np.zeros(N_iter)
+    z_sep_results = np.zeros(N_iter)
     d_results = np.zeros((N_iter,3))
     # Coil separation
-    increment= np.array([0,0.2,0]) / 1000
+    increment= np.array([0,0,0.01]) / 1000 #! increment= np.array([0,0,0.2]) / 1000
 
     print('start time: ',time.strftime("%H:%M:%S"))
     print('Iterations: ',N_iter)
@@ -65,6 +70,7 @@ def iterateCoils(distance):
         T21_results[n,:]= result[3]
         time_comp_results[n]= result[4]
         y_sep_results[n]= result[5]
+        z_sep_results[n]= result[6]
         d_results[n,:] = d*1000
         d= np.sum([d,increment],axis=0)
         print(n)
@@ -75,6 +81,7 @@ def iterateCoils(distance):
     np.savetxt("T21_results.csv", T21_results, delimiter=",")
     np.savetxt("time_comp_results.csv", time_comp_results, delimiter=",")
     np.savetxt("y_sep_results.csv", y_sep_results, delimiter=",")
+    np.savetxt("z_sep_results.csv", z_sep_results, delimiter=",")
     np.savetxt("d_results.csv", d_results, delimiter=",")
 
 def oneCoilOrLines(distance):
@@ -313,7 +320,7 @@ def ComputeForcesAndTorques(distance):
     # Check Middles and Vectors
         print('dLi Middles \n',dLi_Middles,' \ndLj Middles \n',dLj_Middles,'\ndLi Vectors', dLi_Vectors,'\ndLj Vectors \n',dLj_Vectors)
 
-    return F_12,F_21,T_12,T_21,time_comp,y_sep
+    return F_12,F_21,T_12,T_21,time_comp,y_sep,z_sep
 
 
 # Run main
